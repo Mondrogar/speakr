@@ -30,6 +30,7 @@ class OpenAIWhisperConnector(BaseTranscriptionConnector):
         TranscriptionCapability.CHUNKING,
         TranscriptionCapability.TIMESTAMPS,
         TranscriptionCapability.LANGUAGE_DETECTION,
+        TranscriptionCapability.LANGUAGE_SELECTION,
         TranscriptionCapability.HOTWORDS,
         TranscriptionCapability.INITIAL_PROMPT,
     }

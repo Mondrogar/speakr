@@ -32,11 +32,14 @@ class TranscriptionCapability(Enum):
     CHUNKING = auto()              # Automatic file chunking for large files
     TIMESTAMPS = auto()            # Word/segment timestamps
     LANGUAGE_DETECTION = auto()    # Auto language detection
+    LANGUAGE_SELECTION = auto()    # Accepts an explicit language (request.language)
     KNOWN_SPEAKERS = auto()        # Support for known speaker references
     SPEAKER_EMBEDDINGS = auto()    # Return speaker embeddings
     SPEAKER_COUNT_CONTROL = auto() # Support for min/max speaker count
     STREAMING = auto()             # Real-time streaming transcription
 ```
+
+`LANGUAGE_DETECTION` says the provider can work out the language by itself. `LANGUAGE_SELECTION` says the connector reads `request.language` and passes it to the provider; it controls whether the tag editor offers a Default Language. Declare it only if the language is actually sent.
 
 ### ConnectorSpecifications
 
@@ -150,6 +153,7 @@ class DeepgramConnector(BaseTranscriptionConnector):
         TranscriptionCapability.DIARIZATION,
         TranscriptionCapability.TIMESTAMPS,
         TranscriptionCapability.LANGUAGE_DETECTION,
+        TranscriptionCapability.LANGUAGE_SELECTION,
         TranscriptionCapability.SPEAKER_COUNT_CONTROL,
     }
 
@@ -448,6 +452,7 @@ CAPABILITIES: Set[TranscriptionCapability] = {
     TranscriptionCapability.DIARIZATION,      # If you support speaker labels
     TranscriptionCapability.TIMESTAMPS,        # If you return timing info
     TranscriptionCapability.LANGUAGE_DETECTION,# If you can detect language
+    TranscriptionCapability.LANGUAGE_SELECTION,# If you send request.language to the provider
     TranscriptionCapability.SPEAKER_COUNT_CONTROL, # If you support min/max speakers
 }
 ```

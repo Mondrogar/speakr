@@ -270,7 +270,16 @@ export function useUpload(state, utils) {
             && Array.isArray(availableTags?.value)) {
             const liveIds = new Set(availableTags.value.map(t => t.id));
             const restored = memo.tagIds.filter(id => liveIds.has(id));
-            if (restored.length > 0) selectedTagIds.value = restored;
+            if (restored.length > 0) {
+                selectedTagIds.value = restored;
+                // The account language prefills uploadLanguage and would otherwise
+                // beat the tag's; a differing remembered choice was made by hand.
+                const tagLanguage = availableTags.value.find(t => t.id === restored[0])?.default_language;
+                if (tagLanguage && (!memo.language || memo.language === uploadLanguage.value
+                    || memo.language === tagLanguage)) {
+                    uploadLanguage.value = tagLanguage;
+                }
+            }
         }
         if (selectedFolderId && (selectedFolderId.value == null) && memo.folderId != null) {
             // Only restore if the folder still exists.
@@ -1048,10 +1057,11 @@ export function useUpload(state, utils) {
         ).filter(Boolean);
 
         const firstTag = selectedTagsObjects[0];
+        // Language is sent by every connector that accepts one; speaker counts need diarization
+        if (firstTag && firstTag.default_language) {
+            uploadLanguage.value = firstTag.default_language;
+        }
         if (firstTag && connectorSupportsDiarization.value) {
-            if (firstTag.default_language) {
-                uploadLanguage.value = firstTag.default_language;
-            }
             if (firstTag.default_min_speakers) {
                 uploadMinSpeakers.value = firstTag.default_min_speakers;
             }
