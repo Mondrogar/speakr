@@ -565,6 +565,125 @@ def test_edge_cases():
 
 
 # =============================================================================
+# TEST SECTION 9: gpt-transcribe (OpenAI Transcribe connector)
+# =============================================================================
+
+def test_gpt_transcribe():
+    """Test gpt-transcribe support in the OpenAI Transcribe connector."""
+    print("\n=== Testing gpt-transcribe ===")
+
+    import logging
+    from openai.types.audio import Transcription
+    from unittest.mock import MagicMock
+    from src.services.transcription.base import TranscriptionRequest
+    from src.services.transcription.connectors.openai_transcribe import OpenAITranscribeConnector
+    from src.services.transcription_tracking import get_transcription_cost_per_minute
+
+    def transcribe_with(configured_model, request_model=None, languages=None, **request_kwargs):
+        """Run transcribe() against a mocked client; return (create kwargs, response, log text)."""
+        connector = OpenAITranscribeConnector({'api_key': 'test', 'model': configured_model})
+        connector.client = MagicMock()
+        connector.client.audio.transcriptions.create.return_value = Transcription(
+            text='hello', languages=[{'code': code} for code in languages] if languages is not None else None)
+        records = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        target = logging.getLogger('src.services.transcription.connectors.openai_transcribe')
+        old_level = target.level
+        target.addHandler(handler)
+        target.setLevel(logging.INFO)
+        try:
+            response = connector.transcribe(TranscriptionRequest(
+                audio_file=io.BytesIO(b'audio'), filename='a.mp3', model=request_model, **request_kwargs))
+        finally:
+            target.removeHandler(handler)
+            target.setLevel(old_level)
+        params = connector.client.audio.transcriptions.create.call_args.kwargs
+        return params, response, '\n'.join(r.getMessage() for r in records)
+
+    def t1():
+        info = OpenAITranscribeConnector.MODELS['gpt-transcribe']
+        assert info['max_duration_seconds'] == 1500
+        connector = OpenAITranscribeConnector({'api_key': 'test', 'model': 'gpt-transcribe'})
+        assert connector.specifications.max_duration_seconds == 1500
+    run_test("gpt-transcribe is in MODELS with a 1500 s limit on the connector", t1)
+
+    def t2():
+        params, response, _ = transcribe_with('gpt-transcribe', language='cs',
+                                              hotwords='A, B, <bad>, B', prompt='P')
+        assert params['languages'] == ['cs']
+        assert params['keywords'] == ['A', 'B']
+        assert params['prompt'] == 'P'
+        assert 'language' not in params
+        assert response.text == 'hello'
+        assert response.model == 'gpt-transcribe'
+    run_test("gpt-transcribe sends languages, keywords and prompt, not language", t2)
+
+    def t3():
+        params, response, _ = transcribe_with('gpt-4o-transcribe', language='cs',
+                                              hotwords='A, B, <bad>, B', prompt='P')
+        assert params['language'] == 'cs'
+        assert params['prompt'] == 'P. A, B, <bad>, B'
+        assert 'languages' not in params
+        assert 'keywords' not in params
+        assert response.text == 'hello'
+        assert response.model == 'gpt-4o-transcribe'
+    run_test("gpt-4o-transcribe keeps language and the combined prompt", t3)
+
+    def t4():
+        assert get_transcription_cost_per_minute('openai_transcribe', 'gpt-transcribe') == 0.0045
+    run_test("gpt-transcribe costs $0.0045/min", t4)
+
+    def t5():
+        clear_env()
+        reset_registry()
+        os.environ['TRANSCRIPTION_API_KEY'] = 'test-key'
+        os.environ['TRANSCRIPTION_MODEL'] = 'gpt-transcribe'
+        from src.services.transcription.registry import get_registry
+        registry = get_registry()
+        registry.initialize_from_env()
+        assert registry.get_active_connector_name() == 'openai_transcribe'
+    run_test("gpt-transcribe model auto-detects openai_transcribe", t5)
+
+    def t6():
+        params, _, _ = transcribe_with('gpt-transcribe')
+        for name in ('languages', 'keywords', 'prompt', 'language'):
+            assert name not in params
+    run_test("gpt-transcribe omits parameters with nothing to send", t6)
+
+    def t7():
+        params, response, _ = transcribe_with('gpt-4o-transcribe', request_model='gpt-transcribe',
+                                              language='cs', hotwords='A, B', prompt='P')
+        assert params['model'] == 'gpt-transcribe'
+        assert params['languages'] == ['cs']
+        assert params['keywords'] == ['A', 'B']
+        assert params['prompt'] == 'P'
+        assert 'language' not in params
+        assert response.model == 'gpt-transcribe'
+    run_test("per-request override to gpt-transcribe uses its parameters", t7)
+
+    def t8():
+        params, response, _ = transcribe_with('gpt-transcribe', request_model='gpt-4o-transcribe',
+                                              language='cs', hotwords='A, B', prompt='P')
+        assert params['model'] == 'gpt-4o-transcribe'
+        assert params['language'] == 'cs'
+        assert params['prompt'] == 'P. A, B'
+        assert 'languages' not in params
+        assert 'keywords' not in params
+        assert response.model == 'gpt-4o-transcribe'
+    run_test("per-request override away from gpt-transcribe uses the old parameters", t8)
+
+    def t9():
+        _, _, log = transcribe_with('gpt-transcribe', languages=['cs'])
+        assert "Detected languages for model gpt-transcribe: ['cs']" in log
+        _, _, log = transcribe_with('gpt-transcribe', languages=[])
+        assert "Detected languages for model gpt-transcribe: []" in log
+        _, _, log = transcribe_with('gpt-transcribe', languages=None)
+        assert 'Detected languages' not in log
+    run_test("detected languages are logged, including an empty list", t9)
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -584,6 +703,7 @@ def main():
     test_connector_capabilities()
     test_registry_operations()
     test_edge_cases()
+    test_gpt_transcribe()
 
     print("\n" + "=" * 60)
     print(f"RESULTS: {PASSED} passed, {FAILED} failed")

@@ -639,9 +639,9 @@ By default Speakr uses the single `TRANSCRIPTION_MODEL` set in `.env` for every 
 
 ```bash
 # Comma-separated list of model identifiers users can pick.
-TRANSCRIPTION_MODELS_AVAILABLE=whisper-1,gpt-4o-transcribe,gpt-4o-transcribe-diarize,vibevoice
+TRANSCRIPTION_MODELS_AVAILABLE=whisper-1,gpt-transcribe,gpt-4o-transcribe-diarize,vibevoice
 # Optional parallel list of display names. Falls back to the model id when omitted.
-TRANSCRIPTION_MODEL_LABELS=Whisper,GPT-4o,GPT-4o (Diarize),VibeVoice
+TRANSCRIPTION_MODEL_LABELS=Whisper,GPT Transcribe,GPT-4o (Diarize),VibeVoice
 ```
 
 When the list is non-empty, a "Transcription model" dropdown appears in the upload form's Advanced ASR Options and in the reprocess modal. Tags and folders also gain a "Default transcription model" field in their edit forms — set one and any recording uploaded with that tag or in that folder uses the chosen model unless the user picks a different one at upload time.
@@ -661,7 +661,10 @@ The override is propagated to the connector via the `model` field on `Transcript
 !!! warning "List only models compatible with the active connector"
     The dropdown changes the model name **within the currently active connector**; it does not switch between providers. Speakr selects exactly one connector at startup based on `TRANSCRIPTION_CONNECTOR`, `USE_ASR_ENDPOINT`, and `TRANSCRIPTION_BASE_URL`, and every transcription request is routed there. If the list contains a model name the active connector does not recognise (for example, putting `gpt-4o-transcribe` in the list while `USE_ASR_ENDPOINT=true` is set), requests for that model fail with a 500 from the upstream service.
 
-    For a WhisperX backend, list Whisper variants (`large-v3`, `medium`, `distil-medium.en`, etc.). For OpenAI's API, list `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe-diarize`. Mixing providers in one dropdown is a planned feature for a future release.
+    For a WhisperX backend, list Whisper variants (`large-v3`, `medium`, `distil-medium.en`, etc.). For OpenAI's API, list `whisper-1`, `gpt-transcribe`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe-diarize`. Mixing providers in one dropdown is a planned feature for a future release.
+
+!!! note "OpenAI `gpt-transcribe` and the `gpt-4o` transcribe models"
+    OpenAI shuts down the `gpt-4o-transcribe` family on 2027-02-26. Set `TRANSCRIPTION_MODEL=gpt-transcribe` to use its replacement; the `openai_transcribe` connector is selected automatically for model names starting with `gpt-transcribe`. For this model the transcription language is sent as `languages`, hotwords are sent as the `keywords` list (comma-separated entries, duplicates and entries with `<`, `>` or line breaks are dropped) and the initial prompt is sent as `prompt`. The other OpenAI models keep receiving hotwords appended to the prompt, except `gpt-4o-transcribe-diarize`, which ignores both hotwords and the prompt. The price is $0.0045 per minute.
 
 ### Admin-Managed Model List with `/v1/models` Discovery
 
