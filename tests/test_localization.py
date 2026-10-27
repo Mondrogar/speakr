@@ -132,6 +132,17 @@ def test_no_locale_carries_keys_english_does_not(lang):
     assert not extra, f'{lang}.json has {len(extra)} key(s) not in en.json: {extra[:15]}'
 
 
+def test_account_transcription_language_dropdown_offers_czech():
+    """The backend accepts `cs` (SUPPORTED_CODES), so the dropdown must offer
+    it, with a label in every locale."""
+    with open(os.path.join(REPO, 'templates', 'account.html'), encoding='utf-8') as f:
+        template = f.read()
+    assert re.search(r'<option value="cs" data-i18n="languages\.cs"', template)
+
+    for lang in _languages():
+        assert _load(lang)['languages'].get('cs'), f'{lang}.json has no languages.cs'
+
+
 @pytest.mark.parametrize('lang', _languages())
 def test_no_value_is_empty(lang):
     """An empty string renders as nothing at all, which is worse than the
