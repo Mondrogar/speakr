@@ -198,6 +198,48 @@ def test_config_connector_and_user_size_min(monkeypatch):
     assert cfg.source == "user_and_connector"
 
 
+def test_config_size_only_connector_honours_user_duration(monkeypatch):
+    # openai_whisper style: 25MB limit, no duration limit. CHUNK_LIMIT in seconds
+    # must not be dropped; the connector size limit stays as a per-chunk cap.
+    monkeypatch.setenv("CHUNK_LIMIT", "300s")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    cfg = get_effective_chunking_config(specs)
+    assert cfg.enabled is True
+    assert cfg.mode == "duration"
+    assert cfg.limit_value == 300
+    assert cfg.source == "user_duration"
+    # 25MB max -> 80% = 20MB cap per chunk
+    assert cfg.max_size_mb == pytest.approx(20.0)
+
+
+def test_config_size_only_connector_user_size_unchanged(monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "4MB")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    cfg = get_effective_chunking_config(specs)
+    assert cfg.mode == "size"
+    assert cfg.limit_value == pytest.approx(4.0)
+    assert cfg.source == "user_and_connector"
+    assert cfg.max_size_mb is None
+
+
+def test_config_size_only_connector_without_user_limit_unchanged():
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    cfg = get_effective_chunking_config(specs)
+    assert cfg.mode == "size"
+    assert cfg.limit_value == pytest.approx(20.0)
+    assert cfg.source == "connector_limit"
+    assert cfg.max_size_mb is None
+
+
+def test_config_duration_connector_has_no_size_cap(monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "300s")
+    specs = make_specs(max_duration_seconds=1400, recommended_chunk_seconds=1200)
+    cfg = get_effective_chunking_config(specs)
+    assert cfg.mode == "duration"
+    assert cfg.limit_value == 300
+    assert cfg.max_size_mb is None
+
+
 def test_config_connector_recommended_soft():
     # No hard limits, but a recommended chunk length set.
     specs = make_specs(recommended_chunk_seconds=480)
@@ -316,6 +358,35 @@ def test_needs_chunking_duration_unknown_returns_true(monkeypatch):
     with mock.patch("os.path.getsize", return_value=1234), \
          mock.patch.object(svc, "get_audio_duration", return_value=None):
         assert svc.needs_chunking("/unknown.mp3") is True
+
+
+def test_needs_chunking_size_only_connector_duration_over_limit(monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "300s")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    svc = AudioChunkingService()
+    # The pilot case: 15.4MB, 17 minutes. Under the size cap but over 300s.
+    with mock.patch("os.path.getsize", return_value=int(15.4 * 1024 * 1024)), \
+         mock.patch.object(svc, "get_audio_duration", return_value=1020.0):
+        assert svc.needs_chunking("/pilot.mp3", connector_specs=specs) is True
+
+
+def test_needs_chunking_size_only_connector_short_but_oversized(monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "300s")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    svc = AudioChunkingService()
+    # Shorter than the user limit but over the connector size cap (e.g. WAV).
+    with mock.patch("os.path.getsize", return_value=60 * 1024 * 1024), \
+         mock.patch.object(svc, "get_audio_duration", return_value=200.0):
+        assert svc.needs_chunking("/wav.wav", connector_specs=specs) is True
+
+
+def test_needs_chunking_size_only_connector_short_and_small(monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "300s")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    svc = AudioChunkingService()
+    with mock.patch("os.path.getsize", return_value=2 * 1024 * 1024), \
+         mock.patch.object(svc, "get_audio_duration", return_value=200.0):
+        assert svc.needs_chunking("/small.mp3", connector_specs=specs) is False
 
 
 def test_needs_chunking_oserror_returns_false(monkeypatch):
@@ -444,6 +515,48 @@ def test_calc_chunking_duration_mode(monkeypatch):
     assert dur == pytest.approx(600.0)
 
 
+def test_calc_chunking_size_only_connector_user_duration(monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "300s")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    svc = AudioChunkingService()
+    # The pilot file: 15.4MB, 1020s -> ceil(1020/300)=4 chunks, was 1 before.
+    num, dur = svc.calculate_optimal_chunking(int(15.4 * 1024 * 1024), 1020.0, specs)
+    assert num == 4
+    assert dur == pytest.approx(300.0)
+
+
+def test_calc_chunking_size_cap_overrides_longer_user_duration(monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "1200s")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    svc = AudioChunkingService()
+    # 66MB over 3000s: 1200s chunks would give 3 chunks of 22MB; the size
+    # cap (20MB * 0.95 = 19MB) forces ceil(66/19) = 4 chunks.
+    num, dur = svc.calculate_optimal_chunking(66 * 1024 * 1024, 3000.0, specs)
+    assert num == 4
+    assert dur == pytest.approx(750.0)
+
+
+def test_calc_chunking_size_only_connector_floor_keeps_user_seconds(monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "30s")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    svc = AudioChunkingService()
+    # 120s at 128kbps. The 300s floor must not stretch 30s chunks to 120s.
+    num, dur = svc.calculate_optimal_chunking(120 * 16000, 120.0, specs)
+    assert num == 4
+    assert dur == pytest.approx(30.0)
+
+
+def test_calc_chunking_size_only_connector_floor_keeps_size_cap(monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "300s")
+    # 1.25MB max -> 1MB planning cap. 600s at 128kbps is ~9.2MB.
+    specs = make_specs(max_file_size_bytes=int(1.25 * 1024 * 1024))
+    svc = AudioChunkingService()
+    size = 600 * 16000
+    num, dur = svc.calculate_optimal_chunking(size, 600.0, specs)
+    assert num == 10
+    assert dur * (size / 600.0) <= 1024 * 1024
+
+
 def test_calc_chunking_min_duration_clamp(monkeypatch):
     monkeypatch.setenv("CHUNK_LIMIT", "30s")
     svc = AudioChunkingService()
@@ -570,6 +683,110 @@ def test_create_chunks_multiple(tmp_path, monkeypatch):
     # Boundaries are monotonic / cover the file.
     assert chunks[0]["start_time"] == 0
     assert chunks[-1]["end_time"] == pytest.approx(1200.0)
+
+
+def test_create_chunks_size_only_connector_user_duration_respects_size_cap(tmp_path, monkeypatch):
+    # High bitrate input (66MB / 3000s, ~176kbps) with CHUNK_LIMIT=1200s on a
+    # 25MB connector: the duration alone would give 1000s chunks of ~22MB,
+    # above the 20MB cap (80% of 25MB).
+    monkeypatch.setenv("CHUNK_LIMIT", "1200s")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    src = tmp_path / "in.mp3"
+    src.write_bytes(b"x" * 50)
+    mp3 = tmp_path / "conv.mp3"
+    mp3.write_bytes(b"y" * 50)
+    total_size = 66 * 1024 * 1024
+    total_duration = 3000.0
+    svc = AudioChunkingService()
+    monkeypatch.setattr(svc, "convert_to_mp3_and_get_info",
+                        lambda f, d: (str(mp3), total_duration, total_size))
+
+    def fake_run(cmd, **kwargs):
+        # Emulate '-acodec copy': output size proportional to the cut length.
+        seconds = float(cmd[cmd.index("-t") + 1])
+        with open(cmd[-1], "wb") as f:
+            f.truncate(int(total_size * seconds / total_duration))
+        return completed(returncode=0)
+
+    with mock.patch("subprocess.run", side_effect=fake_run):
+        chunks = svc.create_chunks(str(src), str(tmp_path), specs)
+
+    assert len(chunks) == 4
+    assert chunks[0]["start_time"] == 0
+    assert chunks[-1]["end_time"] == pytest.approx(total_duration)
+    cap_bytes = 20 * 1024 * 1024
+    assert all(c["size_bytes"] <= cap_bytes for c in chunks)
+    assert all(c["duration"] <= 1200 for c in chunks)
+
+
+def test_create_chunks_size_only_connector_short_user_limit_no_duplicates(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHUNK_LIMIT", "30s")
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    src = tmp_path / "in.mp3"
+    src.write_bytes(b"x" * 50)
+    mp3 = tmp_path / "conv.mp3"
+    mp3.write_bytes(b"y" * 50)
+    svc = AudioChunkingService()
+    monkeypatch.setattr(svc, "convert_to_mp3_and_get_info",
+                        lambda f, d: (str(mp3), 120.0, 120 * 16000))
+
+    def fake_run(cmd, **kwargs):
+        with open(cmd[-1], "wb") as f:
+            f.write(b"chunkdata")
+        return completed(returncode=0)
+
+    with mock.patch("subprocess.run", side_effect=fake_run):
+        chunks = svc.create_chunks(str(src), str(tmp_path), specs)
+
+    assert len(chunks) == 4
+    starts = [c["start_time"] for c in chunks]
+    assert starts == sorted(set(starts))
+    assert starts == pytest.approx([0, 30, 60, 90])
+    assert all(c["duration"] == pytest.approx(30.0) for c in chunks)
+
+
+@pytest.mark.parametrize("limit,total_duration,expected_chunks", [
+    ("5s", 120.0, 24),
+    ("10s", 120.032653, 13),
+])
+def test_create_chunks_size_only_connector_tiny_user_limit_covers_file(
+        tmp_path, monkeypatch, limit, total_duration, expected_chunks):
+    monkeypatch.setenv("CHUNK_LIMIT", limit)
+    specs = make_specs(max_file_size_bytes=25 * 1024 * 1024)
+    src = tmp_path / "in.mp3"
+    src.write_bytes(b"x" * 50)
+    mp3 = tmp_path / "conv.mp3"
+    mp3.write_bytes(b"y" * 50)
+    svc = AudioChunkingService()
+    monkeypatch.setattr(svc, "convert_to_mp3_and_get_info",
+                        lambda f, d: (str(mp3), total_duration, int(total_duration * 16000)))
+
+    def fake_run(cmd, **kwargs):
+        with open(cmd[-1], "wb") as f:
+            f.write(b"chunkdata")
+        return completed(returncode=0)
+
+    with mock.patch("subprocess.run", side_effect=fake_run):
+        chunks = svc.create_chunks(str(src), str(tmp_path), specs)
+
+    assert len(chunks) == expected_chunks
+    assert chunks[0]["start_time"] == 0
+    assert chunks[-1]["end_time"] == pytest.approx(total_duration)
+    # No gap between consecutive chunks
+    for prev, nxt in zip(chunks, chunks[1:]):
+        assert nxt["start_time"] <= prev["end_time"] + 1e-6
+
+
+def test_calc_chunking_size_only_connector_plan_log_uses_chunk_duration(monkeypatch, caplog):
+    monkeypatch.setenv("CHUNK_LIMIT", "300s")
+    # 1MB planning cap; the floor leaves chunks at ~62s, not total/num_chunks
+    specs = make_specs(max_file_size_bytes=int(1.25 * 1024 * 1024))
+    svc = AudioChunkingService()
+    size = 600 * 16000
+    with caplog.at_level("INFO", logger=ac.logger.name):
+        num, dur = svc.calculate_optimal_chunking(size, 600.0, specs)
+    expected_mb = size * dur / 600.0 / (1024 * 1024)
+    assert f"(~{expected_mb:.1f}MB each)" in caplog.text
 
 
 def test_create_chunks_ffmpeg_failure_skips(tmp_path, monkeypatch):
